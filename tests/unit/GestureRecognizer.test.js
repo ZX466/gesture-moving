@@ -173,26 +173,6 @@ describe('GestureRecognizer', () => {
     });
   });
 
-  describe('calculateFingerBend()', () => {
-    it('should return bend ratios for all 5 fingers', () => {
-      const lm = createMockLandmarks();
-      const bend = recognizer.calculateFingerBend(lm);
-      expect(bend).toHaveProperty('thumb');
-      expect(bend).toHaveProperty('index');
-      expect(bend).toHaveProperty('middle');
-      expect(bend).toHaveProperty('ring');
-      expect(bend).toHaveProperty('pinky');
-    });
-
-    it('should return finite ratios', () => {
-      const lm = createMockLandmarks();
-      const bend = recognizer.calculateFingerBend(lm);
-      Object.values(bend).forEach(ratio => {
-        expect(Number.isFinite(ratio)).toBe(true);
-      });
-    });
-  });
-
   describe('calculateHandOpenness()', () => {
     it('should return value between 0 and 1', () => {
       const lm = createMockLandmarks();
@@ -335,7 +315,7 @@ describe('GestureRecognizer', () => {
       const cb2 = vi.fn();
       recognizer.on('gestureChange', cb1);
       recognizer.on('gestureChange', cb2);
-      recognizer.notify('gestureChange', { gesture: 'peace' });
+      recognizer.notifyGestureChange({ gesture: 'peace' });
       expect(cb1).toHaveBeenCalledWith({ gesture: 'peace' });
       expect(cb2).toHaveBeenCalledWith({ gesture: 'peace' });
     });

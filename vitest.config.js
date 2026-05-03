@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    setupFiles: ['./tests/setup.js'],
     include: ['tests/**/*.test.js'],
     alias: {
       '@modules': resolve(__dirname, 'js/modules'),

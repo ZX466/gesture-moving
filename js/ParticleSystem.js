@@ -123,6 +123,14 @@ export class ParticleSystem {
         }
     }
 
+    calcAdaptiveParticleSize(baseSize) {
+        const isMobile = this.sceneManager?.getIsMobile() ?? false;
+        if (isMobile) {
+            return baseSize * 0.25;
+        }
+        return baseSize * 0.08;
+    }
+
     initScene() {
         try {
             this.sceneManager = new SceneManager(this.config.containerId, {
@@ -149,7 +157,7 @@ export class ParticleSystem {
 
             const material = new THREE.PointsMaterial({
                 color: this.state.particleColor,
-                size: this.state.particleSize * 0.04,
+                size: this.calcAdaptiveParticleSize(this.state.particleSize),
                 sizeAttenuation: true,
                 transparent: true,
                 opacity: 0.85,
@@ -327,7 +335,7 @@ export class ParticleSystem {
 
             const material = new THREE.PointsMaterial({
                 color: this.state.particleColor,
-                size: this.state.particleSize * 0.04,
+                size: this.calcAdaptiveParticleSize(this.state.particleSize),
                 sizeAttenuation: true,
                 transparent: true,
                 opacity: 0.85,
@@ -343,7 +351,7 @@ export class ParticleSystem {
     setParticleSize(size) {
         this.state.particleSize = AppConfig.validate(size, AppConfig.particle.minSize, AppConfig.particle.maxSize, this.state.particleSize);
         if (this.particles) {
-            this.particles.material.size = this.state.particleSize * 0.04;
+            this.particles.material.size = this.calcAdaptiveParticleSize(this.state.particleSize);
         }
     }
 

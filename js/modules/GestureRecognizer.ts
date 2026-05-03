@@ -1,7 +1,6 @@
 /**
- * @fileoverview MediaPipe-based hand gesture recognition.
- * Detects sword_point, peace, fist, open_palm, thumb_up gestures
- * from 21-landmark hand tracking data.
+ * @fileoverview MediaPipe-based hand gesture recognition with non-blocking
+ * fire-and-forget frame processing to prevent desktop freezing.
  */
 
 declare const Hands: {
@@ -30,7 +29,6 @@ import type {
   GestureRecognizerConfig,
   GestureRecognizerState,
   GestureType,
-  HandPosition,
 } from '../types.js';
 
 export class GestureRecognizer {
@@ -39,16 +37,22 @@ export class GestureRecognizer {
   public mpHands: Hands | null = null;
   public videoElement: HTMLVideoElement | null | undefined;
   public cameraActive = false;
-  public isProcessing = false;
+  private isSending = false;
   private animationFrameId: number | null = null;
   public isDestroyed = false;
   private retryTimeout: ReturnType<typeof setTimeout> | null = null;
+  private sendRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly gestureHistory: GestureHistory;
   private readonly listeners: {
     gestureChange: GestureChangeCallback[];
     handPosition: HandPositionCallback[];
     cameraStatus: CameraStatusCallback[];
   };
+  public modelReady = false;
+  private consecutiveErrors = 0;
+  private readonly maxConsecutiveErrors = 30;
+  private lastProcessTime = 0;
+  private readonly minProcessInterval = 50;
 
   constructor(config: GestureRecognizerConfig = {}) {
     this.config = {
@@ -72,9 +76,9 @@ export class GestureRecognizer {
       prevHandX: 0.5,
       prevHandY: 0.5,
       lastHandTime: 0,
-      fingerTip3D: new THREE.Vector3(0, 2, 0),
-      prevFingerTip3D: new THREE.Vector3(0, 2, 0),
-      peaceTarget: new THREE.Vector3(0, 2, 0),
+      fingerTip3D: null,
+      prevFingerTip3D: null,
+      peaceTarget: null,
       targetHandRotation: 0,
       handRotation: 0,
     };
@@ -111,45 +115,88 @@ export class GestureRecognizer {
 
     this.mpHands.setOptions({
       maxNumHands: AppConfig.camera.maxNumHands,
-      modelComplexity: AppConfig.camera.modelComplexity,
-      minDetectionConfidence: AppConfig.camera.minDetectionConfidence,
-      minTrackingConfidence: AppConfig.camera.minTrackingConfidence,
+      modelComplexity: 0,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5,
     });
 
-    this.mpHands.onResults((results) => this.onResults(results));
+    this.mpHands.onResults((results) => {
+      if (!this.modelReady) {
+        this.modelReady = true;
+        console.log('[Gesture] Model loaded and ready');
+      }
+      this.onResults(results);
+    });
+    console.log('[Gesture] MediaPipe Hands initialized');
   }
 
   async startCamera(): Promise<void> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
-    });
+    this.notifyCameraStatus('loading', '正在请求摄像头权限...');
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 320 },
+          height: { ideal: 240 },
+          facingMode: 'user',
+        },
+        audio: false,
+      });
+      console.log('[Gesture] Camera stream obtained:', stream.getVideoTracks()[0]?.label);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.notifyCameraStatus('inactive', '摄像头访问被拒绝: ' + msg);
+      throw e;
+    }
 
     if (!this.videoElement) throw new Error('Video element not initialized');
 
     this.videoElement.srcObject = stream;
-    this.videoElement.setAttribute('playsinline', 'true');
-    this.videoElement.setAttribute('autoplay', 'true');
-    this.videoElement.setAttribute('muted', 'true');
+    this.videoElement.setAttribute('playsinline', '');
+    this.videoElement.setAttribute('autoplay', '');
+    this.videoElement.setAttribute('muted', '');
+    this.videoElement.playsInline = true;
+    this.videoElement.muted = true;
+    this.videoElement.autoplay = true;
 
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve) => {
+      let resolved = false;
+      const done = (): void => {
+        if (resolved) return;
+        resolved = true;
+        this.cameraActive = true;
+        this.notifyCameraStatus('active', '摄像头已启动 - 模型加载中...');
+        setTimeout(() => this.processVideoFrames(), 1000);
+        resolve();
+      };
+
       this.videoElement!.onloadedmetadata = () => {
-        this.videoElement!.play().then(() => {
-          this.cameraActive = true;
-          this.notifyCameraStatus('active', '摄像头已启动 - 请展示手势');
-          setTimeout(() => this.processVideoFrames(), 500);
-          resolve();
-        }).catch(reject);
+        console.log('[Gesture] Video metadata loaded, readyState=' + this.videoElement!.readyState);
+        this.videoElement!.play().then(done).catch((e) => {
+          console.warn('[Gesture] play() rejected:', (e as Error).message);
+          done();
+        });
       };
+
       this.videoElement!.onerror = (e) => {
-        this.notifyCameraStatus('inactive', '摄像头访问失败');
-        reject(e);
+        console.error('[Gesture] Video element error:', e);
+        this.notifyCameraStatus('inactive', '视频元素错误');
       };
+
+      setTimeout(() => {
+        if (!resolved) {
+          console.warn('[Gesture] Camera start timeout, forcing start');
+          done();
+        }
+      }, 8000);
     });
   }
 
   stopCamera(): void {
     this.cameraActive = false;
-    this.isProcessing = false;
+    this.isSending = false;
+    this.modelReady = false;
 
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
@@ -161,62 +208,80 @@ export class GestureRecognizer {
       this.retryTimeout = null;
     }
 
+    if (this.sendRecoveryTimer !== null) {
+      clearTimeout(this.sendRecoveryTimer);
+      this.sendRecoveryTimer = null;
+    }
+
     if (this.videoElement?.srcObject) {
       (this.videoElement.srcObject as MediaStream).getTracks().forEach((track) => track.stop());
     }
 
+    this.consecutiveErrors = 0;
     this.notifyCameraStatus('inactive', '摄像头已停止');
   }
 
-  async processVideoFrames(): Promise<void> {
-    if (!this.cameraActive || !this.mpHands || this.isDestroyed) return;
+  /**
+   * Non-blocking video frame processing. Schedules next frame immediately
+   * and fires send() without awaiting, preventing the animation loop from
+   * freezing while MediaPipe processes a frame.
+   */
+  private processVideoFrames(): void {
+    if (!this.cameraActive || this.isDestroyed) return;
 
-    if (this.isProcessing) {
-      this.animationFrameId = requestAnimationFrame(() => { void this.processVideoFrames(); });
-      return;
-    }
+    this.animationFrameId = requestAnimationFrame(() => this.processVideoFrames());
 
-    if (!this.videoElement || this.videoElement.readyState < 2) {
-      this.animationFrameId = requestAnimationFrame(() => { void this.processVideoFrames(); });
-      return;
-    }
+    if (!this.videoElement || this.videoElement.readyState < 2) return;
+
+    const now = performance.now();
+    if (now - this.lastProcessTime < this.minProcessInterval) return;
+    this.lastProcessTime = now;
+
+    if (this.isSending) return;
+    if (!this.mpHands) return;
 
     try {
-      this.isProcessing = true;
-      const SEND_TIMEOUT_MS = 3000;
-      await Promise.race([
-        this.mpHands.send({ image: this.videoElement }),
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('MediaPipe send timeout')), SEND_TIMEOUT_MS),
-        ),
-      ]);
-      this.isProcessing = false;
-    } catch (e) {
-      console.warn('Error/timeout processing frame:', e);
-      this.handleWasmError(e);
-      this.isProcessing = false;
-    }
-
-    this.animationFrameId = requestAnimationFrame(() => { void this.processVideoFrames(); });
-  }
-
-  private wasmErrorCount = 0;
-  private maxWasmErrors = 3;
-
-  private handleWasmError(error: unknown): void {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes('abort') || msg.includes('Module.arguments') || msg.includes('Failed to fetch') || msg.includes('timeout')) {
-      this.wasmErrorCount++;
-      if (this.wasmErrorCount >= this.maxWasmErrors) {
-        console.warn('[Gesture] WASM/timeout errors detected, stopping camera');
-        this.notifyCameraStatus('inactive', '手势识别出错，请重新启动摄像头');
-        this.stopCamera();
-        this.wasmErrorCount = 0;
+      this.isSending = true;
+      const sendPromise = this.mpHands.send({ image: this.videoElement });
+      if (sendPromise && typeof sendPromise.then === 'function') {
+        sendPromise.then(
+          () => { this.isSending = false; },
+          (err: unknown) => {
+            this.isSending = false;
+            this.consecutiveErrors++;
+            if (this.consecutiveErrors >= this.maxConsecutiveErrors) {
+              console.warn('[Gesture] Too many errors, pausing processing');
+              this.consecutiveErrors = 0;
+              if (this.sendRecoveryTimer) clearTimeout(this.sendRecoveryTimer);
+              this.sendRecoveryTimer = setTimeout(() => {
+                this.sendRecoveryTimer = null;
+              }, 2000);
+            }
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn('[Gesture] send() error:', msg);
+          },
+        );
+      } else {
+        this.isSending = false;
       }
+
+      // Recovery timer: reset isSending if it appears stuck
+      if (this.sendRecoveryTimer === null) {
+        this.sendRecoveryTimer = setTimeout(() => {
+          if (this.isSending) {
+            console.warn('[Gesture] send() appears stuck, resetting flag');
+            this.isSending = false;
+          }
+          this.sendRecoveryTimer = null;
+        }, 5000);
+      }
+    } catch (e) {
+      console.warn('[Gesture] send() error:', (e as Error).message);
+      this.isSending = false;
     }
   }
 
-  onResults(results: HandResults): void {
+  private onResults(results: HandResults): void {
     try {
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         this.handleNoHand();
@@ -230,11 +295,14 @@ export class GestureRecognizer {
       this.updateHandRotation(lm);
       this.updateFingerTips(lm);
 
-      const handSpeed = Math.sqrt(this.state.handVelocityX ** 2 + this.state.handVelocityY ** 2);
-      if (handSpeed > this.config.palmVelocityThreshold * 2.0) return;
-
       const raw = this.classifyGesture(lm);
       this.updateGestureHistory(raw, lm);
+
+      const handSpeed = Math.sqrt(
+        this.state.handVelocityX * this.state.handVelocityX +
+        this.state.handVelocityY * this.state.handVelocityY,
+      );
+      if (handSpeed > this.config.palmVelocityThreshold * 1.5) return;
 
       this.notifyGestureChange({
         gesture: this.state.currentGesture,
@@ -262,47 +330,19 @@ export class GestureRecognizer {
     this.gestureHistory.pendingGesture = 'none';
     this.gestureHistory.frames = [];
     this.notifyGestureChange({ gesture: 'none' });
-
-    if (!this.retryTimeout) {
-      this.retryTimeout = setTimeout(() => {
-        this.retryTimeout = null;
-      }, 1000);
-    }
   }
 
   validateLandmarks(lm: Landmark2D[], results: HandResults): boolean {
-    if (!lm || lm.length < 21) {
-      console.warn('Invalid hand landmarks: expected 21, got', lm ? lm.length : 0);
-      return false;
-    }
+    if (!lm || lm.length < 21) return false;
 
-    for (let i = 0; i < lm.length; i++) {
-      if (
-        !lm[i] ||
-        !Number.isFinite(lm[i].x) ||
-        !Number.isFinite(lm[i].y) ||
-        !Number.isFinite(lm[i].z)
-      ) {
-        console.warn('Invalid landmark data at index', i);
-        return false;
-      }
-      if (
-        lm[i].x < -0.1 || lm[i].x > 1.1 ||
-        lm[i].y < -0.1 || lm[i].y > 1.1 ||
-        lm[i].z! < -0.5 || lm[i].z! > 0.5
-      ) {
-        console.warn('Out of range landmark at index', i, lm[i]);
+    for (let i = 0; i < 21; i++) {
+      if (!lm[i] || !Number.isFinite(lm[i].x) || !Number.isFinite(lm[i].y) || !Number.isFinite(lm[i].z)) {
         return false;
       }
     }
 
-    if (
-      results.multiHandedness &&
-      results.multiHandedness.length > 0 &&
-      results.multiHandedness[0].score < 0.5
-    ) {
-      console.log('⚠️ Low handedness confidence:', results.multiHandedness[0].score.toFixed(2));
-      return false;
+    if (results.multiHandedness && results.multiHandedness.length > 0) {
+      if (results.multiHandedness[0].score < 0.4) return false;
     }
 
     return true;
@@ -338,11 +378,12 @@ export class GestureRecognizer {
   private updateFingerTips(lm: Landmark2D[]): void {
     const newTip3D = this.handTo3D(lm[8].x, lm[8].y);
 
-    if (this.state.fingerTip3D) {
-      this.state.prevFingerTip3D = { ...this.state.fingerTip3D };
-    } else {
-      this.state.prevFingerTip3D = { ...newTip3D };
+    if (!this.state.fingerTip3D) {
+      this.state.fingerTip3D = new THREE.Vector3(0, 2, 0);
+      this.state.prevFingerTip3D = new THREE.Vector3(0, 2, 0);
     }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.state.prevFingerTip3D as any).copy(this.state.fingerTip3D);
     this.state.fingerTip3D = newTip3D;
 
     this.state.peaceTarget = this.handTo3D(
@@ -367,21 +408,16 @@ export class GestureRecognizer {
       }
 
       const recentFrames = this.gestureHistory.frames.slice(-this.config.debounceFrames);
-      const allSame = recentFrames.every((f) => f === raw);
-      const isStable =
-        allSame && recentFrames.length >= Math.max(2, this.config.debounceFrames - 2);
-      const isLongEnough =
-        nowMs - this.gestureHistory.lastGestureTime >=
-        Math.max(80, this.config.minGestureDuration);
+      let allSame = true;
+      for (let i = 1; i < recentFrames.length; i++) {
+        if (recentFrames[i] !== raw) { allSame = false; break; }
+      }
+      const isStable = allSame && recentFrames.length >= Math.max(2, this.config.debounceFrames - 2);
+      const isLongEnough = nowMs - this.gestureHistory.lastGestureTime >= 150;
 
       if (isStable && isLongEnough && this.gestureHistory.stableGesture !== raw) {
-        this.gestureHistory.hysteresisCount++;
-        if (this.gestureHistory.hysteresisCount >= this.config.hysteresisFrames) {
-          this.gestureHistory.stableGesture = raw;
-          this.state.currentGesture = raw;
-          this.gestureHistory.hysteresisCount = 0;
-        }
-      } else if (!isStable || !isLongEnough) {
+        this.gestureHistory.stableGesture = raw;
+        this.state.currentGesture = raw;
         this.gestureHistory.hysteresisCount = 0;
       }
     } else {
@@ -395,7 +431,11 @@ export class GestureRecognizer {
 
   classifyGesture(lm: Landmark2D[]): GestureType {
     const fs = this.getFingerStates(lm);
-    const [thumbExt, indexExt, middleExt, ringExt, pinkyExt] = fs;
+    const indexExt = fs[1];
+    const middleExt = fs[2];
+    const ringExt = fs[3];
+    const pinkyExt = fs[4];
+    const thumbExt = fs[0];
 
     if (indexExt && !middleExt && !ringExt && !pinkyExt) return 'sword_point';
     if (indexExt && middleExt && !ringExt && !pinkyExt) return 'peace';
@@ -408,37 +448,6 @@ export class GestureRecognizer {
     }
 
     return 'unknown';
-  }
-
-  calculateFingerBend(lm: Landmark2D[]): FingerBend {
-    const palmCenter = {
-      x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
-      y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5,
-    };
-
-    const extendedDist = {
-      thumb: this.dist2d(lm[4], palmCenter),
-      index: this.dist2d(lm[8], palmCenter),
-      middle: this.dist2d(lm[12], palmCenter),
-      ring: this.dist2d(lm[16], palmCenter),
-      pinky: this.dist2d(lm[20], palmCenter),
-    };
-
-    const bentDist = {
-      thumb: this.dist2d(lm[3], palmCenter),
-      index: this.dist2d(lm[6], palmCenter),
-      middle: this.dist2d(lm[10], palmCenter),
-      ring: this.dist2d(lm[14], palmCenter),
-      pinky: this.dist2d(lm[18], palmCenter),
-    };
-
-    return {
-      thumb: bentDist.thumb / (extendedDist.thumb || 1),
-      index: bentDist.index / (extendedDist.index || 1),
-      middle: bentDist.middle / (extendedDist.middle || 1),
-      ring: bentDist.ring / (extendedDist.ring || 1),
-      pinky: bentDist.pinky / (extendedDist.pinky || 1),
-    };
   }
 
   getFingerStates(lm: Landmark2D[]): [boolean, boolean, boolean, boolean, boolean] {
@@ -473,20 +482,26 @@ export class GestureRecognizer {
   }
 
   calculateHandOpenness(lm: Landmark2D[]): number {
-    const palmCenter = {
-      x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
-      y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5,
-      z: ((lm[0].z ?? 0) + (lm[5].z ?? 0) + (lm[9].z ?? 0) + (lm[13].z ?? 0) + (lm[17].z ?? 0)) / 5,
+    const pIdx = [0, 5, 9, 13, 17];
+    let cx = 0, cy = 0, cz = 0;
+    for (const i of pIdx) {
+      cx += lm[i].x;
+      cy += lm[i].y;
+      cz += (lm[i].z || 0);
+    }
+    const palmCenter: Landmark2D = {
+      x: cx / pIdx.length,
+      y: cy / pIdx.length,
+      z: cz / pIdx.length,
     };
 
     const fingerTips = [4, 8, 12, 16, 20];
     let totalDist = 0;
     let maxDist = 0;
-
     for (const tipIdx of fingerTips) {
-      const dist = this.dist3d(lm[tipIdx], palmCenter as Landmark2D);
+      const dist = this.dist3d(lm[tipIdx], palmCenter);
       totalDist += dist;
-      maxDist = Math.max(maxDist, dist);
+      if (dist > maxDist) maxDist = dist;
     }
 
     return Math.min(1, Math.max(0, totalDist / (maxDist * 5)));
@@ -497,7 +512,7 @@ export class GestureRecognizer {
       return new THREE.Vector3(0, 2, 0);
     }
     const vh = 2 * Math.tan(Math.PI / 6) * 10;
-    const vw = vh * (window.innerWidth / window.innerHeight);
+    const vw = vh * (window.innerWidth / (window.innerHeight || 1));
     return new THREE.Vector3(
       (hx - 0.5) * vw * 0.8,
       -(hy - 0.5) * vh * 0.8,
@@ -506,18 +521,21 @@ export class GestureRecognizer {
   }
 
   dist2d(a: Landmark2D, b: Landmark2D): number {
-    return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
   }
 
   dist3d(a: Landmark2D, b: Landmark2D): number {
-    return Math.sqrt(
-      (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + ((a.z ?? 0) - (b.z ?? 0)) ** 2,
-    );
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    const dz = (a.z || 0) - (b.z || 0);
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
   }
 
   on(event: 'gestureChange' | 'handPosition' | 'cameraStatus', callback: unknown): void {
     if (this.listeners[event]) {
-      this.listeners[event].push(callback as never);
+      (this.listeners[event] as unknown[]).push(callback);
     }
   }
 
@@ -538,7 +556,22 @@ export class GestureRecognizer {
   }
 
   getState(): Readonly<GestureRecognizerState> {
-    return { ...this.state };
+    const s = this.state;
+    return {
+      currentGesture: s.currentGesture,
+      gestureFrames: s.gestureFrames,
+      handPos: s.handPos,
+      handVelocityX: s.handVelocityX,
+      handVelocityY: s.handVelocityY,
+      prevHandX: s.prevHandX,
+      prevHandY: s.prevHandY,
+      lastHandTime: s.lastHandTime,
+      fingerTip3D: s.fingerTip3D,
+      prevFingerTip3D: s.prevFingerTip3D,
+      peaceTarget: s.peaceTarget,
+      targetHandRotation: s.targetHandRotation,
+      handRotation: s.handRotation,
+    };
   }
 
   isCameraActive(): boolean {
@@ -557,11 +590,12 @@ export class GestureRecognizer {
     this.isDestroyed = true;
     this.stopCamera();
     if (this.mpHands) {
-      this.mpHands.close();
+      try { this.mpHands.close(); } catch { /* ignore */ }
     }
-    Object.keys(this.listeners).forEach((key) => {
-      (this.listeners as unknown as Record<string, unknown[]>)[key] = [];
-    });
+    const keys = Object.keys(this.listeners) as Array<keyof typeof this.listeners>;
+    for (const key of keys) {
+      (this.listeners[key] as unknown[]) = [];
+    }
   }
 }
 

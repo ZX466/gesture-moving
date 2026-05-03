@@ -27,11 +27,11 @@ var GestureRecognizer = class {
       peaceAngleThreshold: config.peaceAngleThreshold ?? 0.4,
       thumbDistRatio: config.thumbDistRatio ?? 1.1,
       fingerBendThreshold: config.fingerBendThreshold ?? 0.04,
-      palmVelocityThreshold: config.palmVelocityThreshold ?? 2,
-      debounceFrames: config.debounceFrames ?? 5,
+      palmVelocityThreshold: config.palmVelocityThreshold ?? 3.0,
+      debounceFrames: config.debounceFrames ?? 3,
       hysteresisFrames: config.hysteresisFrames ?? 3,
-      minGestureDuration: config.minGestureDuration ?? 300,
-      recoveryDelay: config.recoveryDelay ?? 500
+      minGestureDuration: config.minGestureDuration ?? 150,
+      recoveryDelay: config.recoveryDelay ?? 300
     };
     this.state = {
       currentGesture: "none",
@@ -283,7 +283,7 @@ var GestureRecognizer = class {
     if (!lm || lm.length < 21) {
       return false;
     }
-    for (var i = 0; i < 8; i++) {
+    for (var i = 0; i < 21; i++) {
       if (!lm[i] || !isFinite(lm[i].x) || !isFinite(lm[i].y) || !isFinite(lm[i].z)) {
         return false;
       }
@@ -375,7 +375,8 @@ var GestureRecognizer = class {
     var thumbExt = fs[0];
     if (indexExt && !middleExt && !ringExt && !pinkyExt) return "sword_point";
     if (indexExt && middleExt && !ringExt && !pinkyExt) return "peace";
-    if (indexExt && middleExt && ringExt && pinkyExt) return "open_palm";
+    var extendedCount = [indexExt, middleExt, ringExt, pinkyExt].filter(Boolean).length;
+    if (extendedCount >= 3 && indexExt && middleExt) return "open_palm";
     if (!indexExt && !middleExt && !ringExt && !pinkyExt) return "fist";
     if (thumbExt && !indexExt && !middleExt && !ringExt && !pinkyExt) {
       if (lm[4].y < lm[3].y - 0.03) return "thumb_up";
@@ -489,15 +490,31 @@ var GestureRecognizer = class {
     var s = this.state;
     return {
       currentGesture: s.currentGesture,
+      gestureFrames: s.gestureFrames,
       handPos: s.handPos,
+      handVelocityX: s.handVelocityX,
+      handVelocityY: s.handVelocityY,
+      prevHandX: s.prevHandX,
+      prevHandY: s.prevHandY,
+      lastHandTime: s.lastHandTime,
       fingerTip3D: s.fingerTip3D,
-      handRotation: s.handRotation,
-      handOpenness: typeof s._handOpenness !== "undefined" ? s._handOpenness : 0
+      prevFingerTip3D: s.prevFingerTip3D,
+      peaceTarget: s.peaceTarget,
+      targetHandRotation: s.targetHandRotation,
+      handRotation: s.handRotation
     };
   }
 
   isCameraActive() {
     return this.cameraActive;
+  }
+
+  updateSensitivity(sensitivity) {
+    var base = { debounceFrames: 3, minGestureDuration: 150, palmVelocityThreshold: 3.0, hysteresisFrames: 3 };
+    this.config.debounceFrames = Math.max(1, Math.round(base.debounceFrames / sensitivity));
+    this.config.minGestureDuration = Math.max(50, Math.round(base.minGestureDuration / sensitivity));
+    this.config.palmVelocityThreshold = base.palmVelocityThreshold * sensitivity;
+    this.config.hysteresisFrames = Math.max(1, Math.round(base.hysteresisFrames / sensitivity));
   }
 
   dispose() {

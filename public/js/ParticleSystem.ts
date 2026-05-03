@@ -116,6 +116,12 @@ export class ParticleSystem {
     });
   }
 
+  private calcAdaptiveParticleSize(baseSize: number): number {
+    const isMobile = this.sceneManager?.getIsMobile() ?? false;
+    if (isMobile) return baseSize * 0.25;
+    return baseSize * 0.08;
+  }
+
   private initParticles(): void {
     this.state.targetPositions = ShapeGenerators[this.state.currentModel](
       this.state.particleCount,
@@ -130,7 +136,7 @@ export class ParticleSystem {
 
     const material = new THREE.PointsMaterial({
       color: this.state.particleColor,
-      size: this.state.particleSize * 0.04,
+      size: this.calcAdaptiveParticleSize(this.state.particleSize),
       sizeAttenuation: true,
       transparent: true,
       opacity: 0.85,
@@ -283,7 +289,7 @@ export class ParticleSystem {
 
       const material = new THREE.PointsMaterial({
         color: this.state.particleColor,
-        size: this.state.particleSize * 0.04,
+        size: this.calcAdaptiveParticleSize(this.state.particleSize),
         sizeAttenuation: true,
         transparent: true,
         opacity: 0.85,
@@ -304,7 +310,7 @@ export class ParticleSystem {
       this.state.particleSize,
     );
     if (this.particles) {
-      this.particles.material.size = this.state.particleSize * 0.04;
+      this.particles.material.size = this.calcAdaptiveParticleSize(this.state.particleSize);
     }
   }
 
