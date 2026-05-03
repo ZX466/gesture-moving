@@ -57,16 +57,22 @@ var GestureRecognizer = class {
     if (typeof Hands === "undefined") {
       throw new Error("MediaPipe Hands library not loaded!");
     }
+    console.log("[Gesture] Initializing MediaPipe Hands...");
     this.mpHands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      locateFile: (file) => {
+        const url = `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        console.log(`[Gesture] Loading WASM file: ${url}`);
+        return url;
+      }
     });
     this.mpHands.setOptions({
       maxNumHands: 1,
-      modelComplexity: 1,
-      minDetectionConfidence: 0.6,
-      minTrackingConfidence: 0.6
+      modelComplexity: 0,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
     });
     this.mpHands.onResults((results) => this.onResults(results));
+    console.log("[Gesture] MediaPipe Hands initialized successfully");
   }
   async startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -124,14 +130,14 @@ var GestureRecognizer = class {
     }
     try {
       this.isProcessing = true;
-      await new Promise((resolve) => {
-        setTimeout(() => {
-          this.mpHands.send({ image: this.videoElement }).then(() => resolve()).catch((e) => {
-            this.handleSendError(e);
-            resolve();
-          });
-        }, 0);
-      });
+      const sendPromise = this.mpHands.send({ image: this.videoElement });
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("MediaPipe send timeout")), 5000)
+      );
+      await Promise.race([sendPromise, timeoutPromise]);
+    } catch (error) {
+      console.warn("[Gesture] processVideoFrames error:", error.message);
+      this.handleWasmError(error);
     } finally {
       this.isProcessing = false;
     }
