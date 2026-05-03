@@ -126,10 +126,8 @@ export class ParticleSystem {
     calcAdaptiveParticleSize(baseSize) {
         const isMobile = this.sceneManager?.getIsMobile() ?? false;
         if (isMobile) {
-            // 移动端粒子尺寸增大（因为相机更近，需要补偿）
-            return baseSize * 0.15;
+            return baseSize * 0.25;
         }
-        // 桌面端
         return baseSize * 0.08;
     }
 

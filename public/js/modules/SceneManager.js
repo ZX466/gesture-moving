@@ -2,7 +2,7 @@ export class SceneManager {
     constructor(containerId, config = {}) {
         this.container = document.getElementById(containerId);
         if (!this.container) {
-            throw new Error(`Container ${containerId} not found`);
+            throw new Error("Container " + containerId + " not found");
         }
 
         this.config = {
@@ -18,46 +18,57 @@ export class SceneManager {
         this.renderer = null;
         this.animationId = null;
         this.isDestroyed = false;
+        this.webglLost = false;
 
-        // 设备检测
         this.isMobile = this.detectMobile();
         this.isPortrait = window.innerHeight > window.innerWidth;
 
-        // 根据设备自适应参数
         this.adaptiveCameraZ = this.calcAdaptiveCameraZ();
+        this.adaptiveFov = this.calcAdaptiveFov();
         this.adaptivePixelRatio = this.calcAdaptivePixelRatio();
 
-        console.log(`[SceneManager] Device: mobile=${this.isMobile}, portrait=${this.isPortrait}, cameraZ=${this.adaptiveCameraZ.toFixed(1)}, pixelRatio=${this.adaptivePixelRatio}`);
+        console.log(
+            "[SceneManager] mobile=" + this.isMobile +
+            " portrait=" + this.isPortrait +
+            " cameraZ=" + this.adaptiveCameraZ.toFixed(1) +
+            " fov=" + this.adaptiveFov +
+            " dpr=" + this.adaptivePixelRatio
+        );
 
         this.init();
     }
 
     detectMobile() {
-        return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
-            || ('ontouchstart' in window)
+        return (
+            /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+            || ("ontouchstart" in window)
             || (navigator.maxTouchPoints > 0)
-            || (window.innerWidth < 768);
+            || (window.innerWidth < 768)
+        );
     }
 
     calcAdaptiveCameraZ() {
-        const aspect = window.innerWidth / window.innerHeight;
         if (this.isMobile && this.isPortrait) {
-            // 竖屏手机：拉近相机让粒子更大
-            return Math.max(4, Math.min(6, 5));
+            return 4.5;
         } else if (this.isMobile) {
-            // 横屏手机/平板
-            return Math.max(6, Math.min(8, 7));
-        } else {
-            // 桌面端
-            return this.config.cameraZ;
+            return 6;
         }
+        return this.config.cameraZ;
+    }
+
+    calcAdaptiveFov() {
+        if (this.isMobile && this.isPortrait) {
+            return 70;
+        } else if (this.isMobile) {
+            return 65;
+        }
+        return this.config.fov;
     }
 
     calcAdaptivePixelRatio() {
-        const dpr = window.devicePixelRatio || 1;
+        var dpr = window.devicePixelRatio || 1;
         if (this.isMobile) {
-            // 移动端限制 DPR 以提升性能
-            return Math.min(dpr, Math.min(this.config.maxPixelRatio, 2));
+            return Math.min(dpr, 1.5);
         }
         return Math.min(dpr, this.config.maxPixelRatio);
     }
@@ -66,107 +77,143 @@ export class SceneManager {
         try {
             this.scene = new THREE.Scene();
         } catch (e) {
-            console.error('Failed to init Three.js scene:', e);
+            console.error("Failed to init Three.js scene:", e);
             throw e;
         }
 
-        const aspect = window.innerWidth / window.innerHeight;
-        this.camera = new THREE.PerspectiveCamera(
-            this.config.fov,
-            aspect,
-            0.1,
-            1000
-        );
+        var aspect = window.innerWidth / Math.max(window.innerHeight, 1);
+        this.camera = new THREE.PerspectiveCamera(this.adaptiveFov, aspect, 0.1, 1000);
         this.camera.position.set(0, 0, this.adaptiveCameraZ);
 
-        this.renderer = new THREE.WebGLRenderer({
+        var glOptions = {
             antialias: !this.isMobile,
-            alpha: true,
-            powerPreference: this.isMobile ? 'default' : 'high-performance',
+            alpha: false,
+            powerPreference: this.isMobile ? "low-power" : "high-performance",
             preserveDrawingBuffer: false,
-        });
+            failIfMajorPerformanceCaveat: false
+        };
+
+        try {
+            this.renderer = new THREE.WebGLRenderer(glOptions);
+        } catch (e) {
+            console.error("Failed to create WebGL renderer:", e);
+            glOptions.antialias = false;
+            this.renderer = new THREE.WebGLRenderer(glOptions);
+        }
+
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(this.adaptivePixelRatio);
         this.renderer.setClearColor(this.config.backgroundColor, 1);
-
-        // 移动端优化渲染设置
-        if (this.isMobile) {
-            this.renderer.setClearColor(this.config.backgroundColor, 1);
-        }
+        this.renderer.domElement.style.position = "absolute";
+        this.renderer.domElement.style.top = "0";
+        this.renderer.domElement.style.left = "0";
+        this.renderer.domElement.style.width = "100%";
+        this.renderer.domElement.style.height = "100%";
 
         this.container.appendChild(this.renderer.domElement);
 
         this.setupLights();
         this.setupResizeHandler();
+        this.setupContextLossHandler();
 
-        // 初始 resize 确保正确尺寸
         this.onResize();
     }
 
     setupLights() {
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        var ambientLight = new THREE.AmbientLight(0x222244, 0.6);
+        this.scene.add(ambientLight);
+
+        var directionalLight = new THREE.DirectionalLight(0xffffff, 0.7);
         directionalLight.position.set(5, 10, 7);
         this.scene.add(directionalLight);
+
+        var backLight = new THREE.DirectionalLight(0x334466, 0.4);
+        backLight.position.set(-5, -2, -5);
+        this.scene.add(backLight);
     }
 
     setupResizeHandler() {
-        let resizeTimeout;
-        window.addEventListener('resize', () => {
+        var self = this;
+        var resizeTimeout;
+        window.addEventListener("resize", function() {
             if (resizeTimeout) clearTimeout(resizeTimeout);
-            resizeTimeout = setTimeout(() => this.onResize(), 100);
+            resizeTimeout = setTimeout(function() { self.onResize(); }, 200);
         }, { passive: true });
 
-        // 监听屏幕方向变化
-        if (screen?.orientation) {
-            screen.orientation.addEventListener('change', () => {
-                setTimeout(() => this.onResize(), 200);
+        if (screen && screen.orientation) {
+            screen.orientation.addEventListener("change", function() {
+                setTimeout(function() { self.onResize(); }, 300);
             });
         }
     }
 
-    onResize() {
-        if (this.isDestroyed) return;
+    setupContextLossHandler() {
+        var self = this;
+        var canvas = this.renderer.domElement;
 
-        // 更新设备状态
+        canvas.addEventListener("webglcontextlost", function(e) {
+            e.preventDefault();
+            self.webglLost = true;
+            console.warn("[SceneManager] WebGL context lost, will attempt recovery");
+        }, false);
+
+        canvas.addEventListener("webglcontextrestored", function() {
+            self.webglLost = false;
+            console.log("[SceneManager] WebGL context restored");
+            self.onResize();
+        }, false);
+    }
+
+    onResize() {
+        if (this.isDestroyed || this.webglLost) return;
+
         this.isPortrait = window.innerHeight > window.innerWidth;
-        const wasMobile = this.isMobile;
+        var wasMobile = this.isMobile;
         this.isMobile = this.detectMobile();
 
-        const width = window.innerWidth;
-        const height = window.innerHeight;
+        var width = window.innerWidth;
+        var height = window.innerHeight;
 
-        this.camera.aspect = width / height;
+        this.camera.aspect = width / Math.max(height, 1);
         this.camera.updateProjectionMatrix();
 
         this.renderer.setSize(width, height);
 
-        // 动态调整相机距离（当方向改变时）
-        const newCameraZ = this.calcAdaptiveCameraZ();
-        if (Math.abs(newCameraZ - this.adaptiveCameraZ) > 0.5) {
-            this.adaptiveCameraZ = newCameraZ;
-            // 平滑过渡相机位置
-            const targetZ = this.adaptiveCameraZ;
-            const startZ = this.camera.position.z;
-            const startTime = performance.now();
-            const duration = 500;
+        var newCameraZ = this.calcAdaptiveCameraZ();
+        var newFov = this.calcAdaptiveFov();
 
-            const animateCamera = () => {
-                const elapsed = performance.now() - startTime;
-                const t = Math.min(elapsed / duration, 1);
-                const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
-                this.camera.position.z = startZ + (targetZ - startZ) * eased;
-                if (t < 1) requestAnimationFrame(animateCamera);
-            };
-            animateCamera();
-            console.log(`[SceneManager] Camera Z adjusted to: ${targetZ}`);
+        if (Math.abs(newFov - this.camera.fov) > 1) {
+            this.camera.fov = newFov;
+            this.camera.updateProjectionMatrix();
+            this.adaptiveFov = newFov;
         }
 
-        // 动态调整像素比
-        const newPixelRatio = this.calcAdaptivePixelRatio();
+        if (Math.abs(newCameraZ - this.adaptiveCameraZ) > 0.5) {
+            this.animateCameraZ(this.adaptiveCameraZ, newCameraZ);
+            this.adaptiveCameraZ = newCameraZ;
+        }
+
+        var newPixelRatio = this.calcAdaptivePixelRatio();
         if (Math.abs(newPixelRatio - this.adaptivePixelRatio) > 0.1) {
             this.adaptivePixelRatio = newPixelRatio;
             this.renderer.setPixelRatio(this.adaptivePixelRatio);
         }
+    }
+
+    animateCameraZ(fromZ, toZ) {
+        var self = this;
+        var startTime = performance.now();
+        var duration = 400;
+
+        function step() {
+            var elapsed = performance.now() - startTime;
+            var t = Math.min(elapsed / duration, 1);
+            var eased = 1 - Math.pow(1 - t, 3);
+            self.camera.position.z = fromZ + (toZ - fromZ) * eased;
+            if (t < 1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+        console.log("[SceneManager] Camera Z: " + fromZ.toFixed(1) + " -> " + toZ.toFixed(1));
     }
 
     addObject(object) {
@@ -178,43 +225,23 @@ export class SceneManager {
     }
 
     render() {
-        if (!this.isDestroyed) {
+        if (!this.isDestroyed && !this.webglLost) {
             this.renderer.render(this.scene, this.camera);
         }
     }
 
-    getScene() {
-        return this.scene;
-    }
-
-    getCamera() {
-        return this.camera;
-    }
-
-    getRenderer() {
-        return this.renderer;
-    }
-
-    getContainer() {
-        return this.container;
-    }
-
-    getIsMobile() {
-        return this.isMobile;
-    }
-
-    getAdaptiveCameraZ() {
-        return this.adaptiveCameraZ;
-    }
+    getScene() { return this.scene; }
+    getCamera() { return this.camera; }
+    getRenderer() { return this.renderer; }
+    getContainer() { return this.container; }
+    getIsMobile() { return this.isMobile; }
+    getAdaptiveCameraZ() { return this.adaptiveCameraZ; }
 
     dispose() {
         this.isDestroyed = true;
+        if (this.animationId) cancelAnimationFrame(this.animationId);
 
-        if (this.animationId) {
-            cancelAnimationFrame(this.animationId);
-        }
-
-        window.removeEventListener('resize', () => this.onResize());
+        window.removeEventListener("resize", this.onResize);
 
         if (this.renderer) {
             this.renderer.dispose();
@@ -224,13 +251,11 @@ export class SceneManager {
         }
 
         if (this.scene) {
-            this.scene.traverse((object) => {
-                if (object.geometry) {
-                    object.geometry.dispose();
-                }
+            this.scene.traverse(function(object) {
+                if (object.geometry) object.geometry.dispose();
                 if (object.material) {
                     if (Array.isArray(object.material)) {
-                        object.material.forEach(m => m.dispose());
+                        object.material.forEach(function(m) { m.dispose(); });
                     } else {
                         object.material.dispose();
                     }
