@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npm test *)",
+      "Bash(npx tsc *)",
+      "Bash(node -e \"require\\('./scripts/hooks/gateguard-fact-force.js'\\)\\(\\)\" ECC_DISABLED_HOOKS=pre:edit-write:gateguard-fact-force)",
+      "Bash(node *)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(echo \"tsc exit: $?\")",
+      "mcp__plugin_everything-claude-code_playwright__browser_navigate",
+      "Bash(sed -i 's|href=\"public/favicon.svg\"|href=\"favicon.svg\"|' public/index.html)",
+      "Bash(sed -i 's|href=\"css/styles.css\"|href=\"../css/styles.css\"|' public/index.html)",
+      "Bash(sed -i 's|src=\"js/main.js\"|src=\"../js/main.js\"|' public/index.html)",
+      "Bash(ECC_GATEGUARD=off npx esbuild *)"
+    ]
+  }
+}

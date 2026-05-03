@@ -1,0 +1,44 @@
+{
+  "name": "particle-art-system",
+  "version": "1.0.0",
+  "description": "交互式3D粒子艺术系统 - 支持手势识别和飞剑特效",
+  "main": "index.html",
+  "type": "module",
+  "scripts": {
+    "dev": "npx http-server -p 8080 -o",
+    "start": "npx http-server -p 8080",
+    "serve": "python -m http.server 8080",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "three.js",
+    "particles",
+    "gesture-recognition",
+    "mediapipe",
+    "interactive-art",
+    "webgl"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.0",
+    "http-server": "^14.1.1",
+    "typescript": "^6.0.3",
+    "vitest": "^1.6.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "browserslist": [
+    "last 2 Chrome versions",
+    "last 2 Firefox versions",
+    "last 2 Safari versions",
+    "last 2 Edge versions"
+  ]
+}

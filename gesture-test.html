@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>手势识别精确度测试</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            color: #fff;
+            min-height: 100vh;
+        }
+        h1 { text-align: center; color: #60d0ff; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .panel {
+            background: rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+            margin-bottom: 20px;
+        }
+        .video-container { position: relative; width: 100%; background: #000; border-radius: 12px; overflow: hidden; }
+        video { width: 100%; display: block; transform: scaleX(-1); }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        button {
+            padding: 12px 24px;
+            font-size: 14px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        .btn-start { background: #10b981; color: white; }
+        .btn-stop { background: #ef4444; color: white; }
+        button:hover { opacity: 0.9; }
+        .status { padding: 15px; border-radius: 8px; margin-top: 15px; }
+        .status.success { background: rgba(16,185,129,0.2); border: 1px solid #10b981; }
+        .status.error { background: rgba(239,68,68,0.2); border: 1px solid #ef4444; }
+        .gesture-result {
+            text-align: center;
+            padding: 30px;
+            margin-top: 15px;
+            border-radius: 12px;
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .gesture-box { background: rgba(79,70,229,0.3); border: 2px solid rgba(79,70,229,0.6); }
+        .gesture-active { background: rgba(16,185,129,0.3); border: 2px solid #10b981; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+        .finger-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 10px; margin-top: 15px; }
+        .finger { text-align: center; padding: 15px; border-radius: 8px; }
+        .finger.extended { background: rgba(16,185,129,0.3); border: 2px solid #10b981; }
+        .finger.bent { background: rgba(239,68,68,0.2); border: 2px solid #ef4444; }
+        .finger-name { font-size: 14px; margin-bottom: 5px; }
+        .finger-ratio { font-size: 18px; font-weight: bold; }
+        .log-panel { background: #000; border-radius: 8px; padding: 15px; font-family: 'Courier New', monospace; font-size: 12px; max-height: 300px; overflow-y: auto; }
+        .log-entry { margin: 5px 0; padding: 5px; border-left: 3px solid; }
+        .log-info { border-color: #60a5fa; }
+        .log-success { border-color: #10b981; }
+        .log-error { border-color: #ef4444; }
+        .guide-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 15px; margin-top: 15px; }
+        .guide-item { text-align: center; padding: 20px; background: rgba(255,255,255,0.05); border-radius: 8px; }
+        .guide-icon { font-size: 36px; margin-bottom: 10px; }
+        .guide-name { font-size: 16px; font-weight: 600; color: #60d0ff; }
+        .guide-desc { font-size: 12px; opacity: 0.7; margin-top: 5px; }
+    </style>
+</head>
+<body>
+    <h1>手势识别精确度测试</h1>
+    <div class="container">
+        <div class="panel">
+            <h2>摄像头预览</h2>
+            <div class="video-container">
+                <video id="video" playsinline autoplay muted></video>
+                <canvas id="canvas"></canvas>
+            </div>
+            <div style="margin-top: 15px;">
+                <button class="btn-start" onclick="startCamera()">启动摄像头</button>
+                <button class="btn-stop" onclick="stopCamera()">停止</button>
+            </div>
+            <div id="status" class="status error">请启动摄像头开始测试</div>
+        </div>
+        
+        <div class="panel">
+            <h2>手势识别结果</h2>
+            <div id="gesture-result" class="gesture-result gesture-box">等待手势...</div>
+            
+            <h3>手指状态</h3>
+            <div class="finger-grid">
+                <div class="finger bent" id="finger-thumb">
+                    <div class="finger-name">拇指</div>
+                    <div class="finger-ratio" id="ratio-thumb">-</div>
+                </div>
+                <div class="finger bent" id="finger-index">
+                    <div class="finger-name">食指</div>
+                    <div class="finger-ratio" id="ratio-index">-</div>
+                </div>
+                <div class="finger bent" id="finger-middle">
+                    <div class="finger-name">中指</div>
+                    <div class="finger-ratio" id="ratio-middle">-</div>
+                </div>
+                <div class="finger bent" id="finger-ring">
+                    <div class="finger-name">无名指</div>
+                    <div class="finger-ratio" id="ratio-ring">-</div>
+                </div>
+                <div class="finger bent" id="finger-pinky">
+                    <div class="finger-name">小指</div>
+                    <div class="finger-ratio" id="ratio-pinky">-</div>
+                </div>
+            </div>
+            
+            <h3>手势指南</h3>
+            <div class="guide-grid">
+                <div class="guide-item"><div class="guide-icon">🗡️</div><div class="guide-name">剑指</div><div class="guide-desc">只有食指伸展</div></div>
+                <div class="guide-item"><div class="guide-icon">✌️</div><div class="guide-name">双指</div><div class="guide-desc">食指+中指伸展</div></div>
+                <div class="guide-item"><div class="guide-icon">✊</div><div class="guide-name">握拳</div><div class="guide-desc">所有手指弯曲</div></div>
+                <div class="guide-item"><div class="guide-icon">🖐️</div><div class="guide-name">张开</div><div class="guide-desc">所有手指伸展</div></div>
+                <div class="guide-item"><div class="guide-icon">👍</div><div class="guide-name">点赞</div><div class="guide-desc">只有拇指伸展</div></div>
+                <div class="guide-item"><div class="guide-icon">🤞</div><div class="guide-name">比心</div><div class="guide-desc">拇指+食指弯曲</div></div>
+            </div>
+        </div>
+        
+        <div class="panel">
+            <h3>实时日志</h3>
+            <div class="log-panel" id="log"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    
+    <script>
+        let hands = null;
+        let isRunning = false;
+        const fingerNames = ['thumb', 'index', 'middle', 'ring', 'pinky'];
+        
+        function log(msg, type = 'info') {
+            const div = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry log-' + type;
+            entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+            div.insertBefore(entry, div.firstChild);
+        }
+        
+        function setStatus(msg, type) {
+            const el = document.getElementById('status');
+            el.textContent = msg;
+            el.className = 'status ' + type;
+        }
+        
+        function dist2d(a, b) {
+            return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+        }
+        
+        function calculateFingerBend(lm) {
+            const pc = {
+                x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
+                y: (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5
+            };
+            const ext = {
+                thumb: dist2d(lm[4], pc), index: dist2d(lm[8], pc),
+                middle: dist2d(lm[12], pc), ring: dist2d(lm[16], pc), pinky: dist2d(lm[20], pc)
+            };
+            const bend = {
+                thumb: dist2d(lm[3], pc), index: dist2d(lm[6], pc),
+                middle: dist2d(lm[10], pc), ring: dist2d(lm[14], pc), pinky: dist2d(lm[18], pc)
+            };
+            return {
+                thumb: bend.thumb / (ext.thumb || 1),
+                index: bend.index / (ext.index || 1),
+                middle: bend.middle / (ext.middle || 1),
+                ring: bend.ring / (ext.ring || 1),
+                pinky: bend.pinky / (ext.pinky || 1)
+            };
+        }
+        
+        function getFingerStates(lm) {
+            return [
+                dist2d(lm[4], lm[0]) > dist2d(lm[3], lm[0]) * 1.1,
+                lm[8].y < lm[6].y - 0.005,
+                lm[12].y < lm[10].y - 0.005,
+                lm[16].y < lm[14].y - 0.005,
+                lm[20].y < lm[18].y - 0.005
+            ];
+        }
+        
+        function classifyGesture(lm) {
+            const fs = getFingerStates(lm);
+            const [th, ix, md, rg, pk] = fs;
+            const fb = calculateFingerBend(lm);
+            
+            if (ix && !md && !rg && !pk && fb.index > 0.8 && fb.middle < 0.7 && fb.ring < 0.7 && fb.pinky < 0.6) return 'sword_point';
+            if (ix && md && !rg && !pk && fb.index > 0.8 && fb.middle > 0.8 && fb.ring < 0.7 && fb.pinky < 0.6) return 'peace';
+            if (ix && md && rg && pk && fb.index > 0.8 && fb.middle > 0.8 && fb.ring > 0.8 && fb.pinky > 0.7) return 'open_palm';
+            if (!ix && !md && !rg && !pk && fb.index < 0.7 && fb.middle < 0.7 && fb.ring < 0.7 && fb.pinky < 0.6) return 'fist';
+            if (th && !ix && !md && !rg && !pk && lm[4].y < lm[3].y - 0.05) return 'thumb_up';
+            return 'unknown';
+        }
+        
+        function updateFingerUI(index, extended, ratio) {
+            const el = document.getElementById('finger-' + fingerNames[index]);
+            const ratioEl = document.getElementById('ratio-' + fingerNames[index]);
+            el.className = 'finger ' + (extended ? 'extended' : 'bent');
+            ratioEl.textContent = ratio.toFixed(2);
+        }
+        
+        function updateGestureResult(gesture) {
+            const el = document.getElementById('gesture-result');
+            const icons = {
+                'sword_point': '🗡️ 剑指',
+                'peace': '✌️ 双指',
+                'fist': '✊ 握拳',
+                'open_palm': '🖐️ 张开',
+                'thumb_up': '👍 点赞',
+                'unknown': '❓ 未知'
+            };
+            
+            if (gesture && gesture !== 'unknown') {
+                el.textContent = icons[gesture];
+                el.className = 'gesture-result gesture-active';
+            } else {
+                el.textContent = '等待手势...';
+                el.className = 'gesture-result gesture-box';
+            }
+        }
+        
+        async function startCamera() {
+            if (isRunning) return;
+            
+            if (typeof Hands === 'undefined') {
+                log('MediaPipe Hands 未加载', 'error');
+                setStatus('库加载失败，请检查网络', 'error');
+                return;
+            }
+            
+            const video = document.getElementById('video');
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            try {
+                log('请求摄像头权限...', 'info');
+                setStatus('正在启动摄像头...', 'error');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' }
+                });
+                
+                video.srcObject = stream;
+                
+                await new Promise(resolve => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        resolve();
+                    };
+                });
+                
+                log('摄像头已启动', 'success');
+                setStatus('摄像头已启动 - 请展示手势', 'success');
+                
+                hands = new Hands({
+                    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                });
+                
+                hands.setOptions({
+                    maxNumHands: 1,
+                    modelComplexity: 1,
+                    minDetectionConfidence: 0.8,
+                    minTrackingConfidence: 0.8
+                });
+                
+                hands.onResults(results => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    
+                    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                        const lm = results.multiHandLandmarks[0];
+                        
+                        drawingUtils.drawLandmarks(ctx, lm, {
+                            color: '#60d0ff',
+                            fillColor: '#60d0ff',
+                            radius: 3
+                        });
+                        
+                        const fs = getFingerStates(lm);
+                        const fb = calculateFingerBend(lm);
+                        
+                        for (let i = 0; i < 5; i++) {
+                            updateFingerUI(i, fs[i], fb[fingerNames[i]]);
+                        }
+                        
+                        const gesture = classifyGesture(lm);
+                        updateGestureResult(gesture);
+                        
+                        log(`手势: ${gesture} | ${fs.map((e,i) => fingerNames[i][0].toUpperCase() + ':' + (e ? 'E' : 'B')).join(' ')}`, 
+                            gesture !== 'unknown' ? 'success' : 'info');
+                    } else {
+                        for (let i = 0; i < 5; i++) updateFingerUI(i, false, 0);
+                        updateGestureResult(null);
+                    }
+                });
+                
+                isRunning = true;
+                
+                async function process() {
+                    if (!isRunning) return;
+                    if (video.readyState >= 2) {
+                        try {
+                            await hands.send({ image: video });
+                        } catch (e) {
+                            log('处理帧错误: ' + e.message, 'error');
+                        }
+                    }
+                    requestAnimationFrame(process);
+                }
+                
+                process();
+                
+            } catch (err) {
+                log('摄像头启动失败: ' + err.message, 'error');
+                setStatus('摄像头启动失败: ' + err.message, 'error');
+            }
+        }
+        
+        function stopCamera() {
+            if (!isRunning) return;
+            
+            const video = document.getElementById('video');
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(t => t.stop());
+                video.srcObject = null;
+            }
+            
+            isRunning = false;
+            log('摄像头已停止', 'info');
+            setStatus('摄像头已停止', 'error');
+            
+            for (let i = 0; i < 5; i++) updateFingerUI(i, false, 0);
+            updateGestureResult(null);
+        }
+        
+        log('页面已加载，请点击"启动摄像头"', 'info');
+    </script>
+</body>
+</html>

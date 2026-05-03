@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>粒子艺术系统</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div id="particle-container"></div>
+    <video id="video-feed" style="display: none;" playsinline autoplay muted></video>
+
+    <!-- 右侧控制面板 -->
+    <div class="control-panel">
+        <h3>
+            <i class="fas fa-wand-magic-sparkles"></i>
+            粒子艺术
+        </h3>
+
+        <!-- 模型选择 -->
+        <div class="control-section">
+            <label>选择模型</label>
+            <div class="model-grid">
+                <button class="model-btn active" data-model="heart">
+                    <i class="fas fa-heart"></i> 爱心
+                </button>
+                <button class="model-btn" data-model="flower">
+                    <i class="fas fa-fan"></i> 花朵
+                </button>
+                <button class="model-btn" data-model="saturn">
+                    <i class="fas fa-circle-notch"></i> 土星
+                </button>
+                <button class="model-btn" data-model="buddha">
+                    <i class="fas fa-om"></i> 佛像
+                </button>
+                <button class="model-btn" data-model="fireworks">
+                    <i class="fas fa-burst"></i> 烟花
+                </button>
+                <button class="model-btn" data-model="sphere">
+                    <i class="fas fa-circle"></i> 球体
+                </button>
+                <button class="model-btn" data-model="star">
+                    <i class="fas fa-star"></i> 星星
+                </button>
+                <button class="model-btn" data-model="spiral">
+                    <i class="fas fa-rotate"></i> 螺旋
+                </button>
+                <button class="model-btn" data-model="dna">
+                    <i class="fas fa-dna"></i> DNA
+                </button>
+                <button class="model-btn" data-model="galaxy">
+                    <i class="fas fa-galaxy"></i> 星系
+                </button>
+            </div>
+        </div>
+
+        <!-- 飞剑开关 -->
+        <div class="control-section">
+            <label>飞剑控制</label>
+            <button class="btn-control sword-toggle-btn active" id="sword-toggle">
+                <i class="fas fa-khanda"></i> <span id="sword-toggle-label">飞剑已开启</span>
+            </button>
+        </div>
+
+        <!-- 颜色选择 -->
+        <div class="control-section">
+            <label>粒子颜色</label>
+            <div class="color-picker-wrapper">
+                <input type="color" id="color-picker" value="#4f46e5">
+                <span class="color-value" id="color-value">#4f46e5</span>
+            </div>
+        </div>
+
+        <!-- 粒子数量 -->
+        <div class="control-section">
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>粒子数量</span>
+                    <span id="particle-count-value">1000</span>
+                </div>
+                <input type="range" id="particle-count" min="100" max="5000" value="1000" step="100">
+            </div>
+        </div>
+
+        <!-- 粒子大小 -->
+        <div class="control-section">
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>粒子大小</span>
+                    <span id="particle-size-value">2</span>
+                </div>
+                <input type="range" id="particle-size" min="0.5" max="5" value="2" step="0.1">
+            </div>
+        </div>
+
+        <!-- 手势灵敏度 -->
+        <div class="control-section">
+            <div class="slider-group">
+                <div class="slider-label">
+                    <span>手势灵敏度</span>
+                    <span id="gesture-sensitivity-value">1.0</span>
+                </div>
+                <input type="range" id="gesture-sensitivity" min="0.5" max="2" value="1.0" step="0.1">
+            </div>
+        </div>
+
+        <!-- 控制按钮 -->
+        <div class="control-section">
+            <div class="button-group">
+                <button class="btn-control primary" id="start-camera">
+                    <i class="fas fa-video"></i> 启动摄像头
+                </button>
+                <button class="btn-control" id="stop-camera" style="display: none;">
+                    <i class="fas fa-stop"></i> 停止
+                </button>
+            </div>
+            <div id="camera-status" style="margin-top: 10px; font-size: 12px; color: #a0aec0;">
+                <i class="fas fa-circle" style="font-size: 8px; color: #ef4444;"></i> 摄像头未启动
+            </div>
+        </div>
+
+        <div class="button-group">
+            <button class="btn-control" id="reset-btn">
+                <i class="fas fa-redo"></i> 重置
+            </button>
+            <button class="btn-control" id="screenshot-btn">
+                <i class="fas fa-camera"></i> 截图
+            </button>
+        </div>
+    </div>
+
+    <!-- 全屏按钮 -->
+    <button class="fullscreen-btn" id="fullscreen-btn" title="全屏">
+        <i class="fas fa-expand"></i>
+    </button>
+
+    <!-- 手势提示 -->
+    <div class="gesture-hint">
+        <div id="gesture-status" style="font-size:14px;margin-bottom:10px;min-height:20px;opacity:0.3;">等待手势...</div>
+        <strong>手势指南：</strong><br>
+        <span style="color:#60d0ff;">🗡️ 剑指</span> — 召唤飞剑到指尖<br>
+        <span style="color:#60d0ff;">✌️ 双指</span> — 御剑飞行<br>
+        <span style="color:#60d0ff;">✊ 握拳</span> — 自动巡航<br>
+        <span style="color:#60d0ff;">🖐️ 张开</span> — 粒子散射<br>
+        <span style="color:#60d0ff;">👍 拇指</span> — 加速旋转<br>
+        <span style="color:#a78bfa;">✋ 移动手掌</span> — 粒子跟随<br>
+        <span style="color:#a78bfa;">🔄 旋转手腕</span> — 场景旋转
+    </div>
+
+    <!-- 外部脚本 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="js/main.js" type="module"></script>
+</body>
+</html>
