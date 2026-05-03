@@ -85,47 +85,36 @@ var GestureRecognizer = class {
     });
     this.mpHands.onResults((results) => this.onResults(results));
 
-    // 关键修复：预加载 WASM 模型，确保完全就绪后再标记为 ready
-    await this.preloadWasm();
+    // 后台静默预热 WASM（不阻塞 init 返回）
+    this.warmupWasm();
     console.log("[Gesture] MediaPipe Hands initialized successfully");
   }
 
-  // 新增：预加载 WASM 并验证就绪状态
-  async preloadWasm() {
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        console.warn("[Gesture] WASM preload timeout, continuing anyway");
-        this.wasmReady = true;
-        resolve();
-      }, 15000);
+  // 非阻塞式 WASM 预热（不 await，不阻塞）
+  warmupWasm() {
+    if (this.wasmReady) return;
 
+    const doWarmup = async () => {
       try {
-        // 发送一个空帧来触发 WASM 初始化
-        const testCanvas = document.createElement('canvas');
-        testCanvas.width = 1;
-        testCanvas.height = 1;
-        const ctx = testCanvas.getContext('2d');
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, 1, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = 2; canvas.height = 2;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, 2, 2);
 
-        this.mpHands.send({ image: testCanvas }).then(() => {
-          clearTimeout(timeout);
-          this.wasmReady = true;
-          console.log("[Gesture] WASM preloaded and verified ready");
-          resolve();
-        }).catch((err) => {
-          clearTimeout(timeout);
-          // 即使预加载失败，也标记为 ready（会在运行时重试）
-          console.warn("[Gesture] WASM preload test failed (may be normal):", err.message);
-          this.wasmReady = true;
-          resolve();
-        });
-      } catch (err) {
-        clearTimeout(timeout);
+        const race = Promise.race([
+          this.mpHands.send({ image: canvas }),
+          new Promise(r => setTimeout(r, 10000))
+        ]);
+        await race;
         this.wasmReady = true;
-        resolve();
+        console.log("[Gesture] WASM warmed up successfully");
+      } catch (e) {
+        console.warn("[Gesture] WASM warmup failed (will retry on first frame):", e.message);
+        this.wasmReady = true; // 标记为已尝试，运行时会重试
       }
-    });
+    };
+
+    doWarmup();
   }
 
   async startCamera() {
