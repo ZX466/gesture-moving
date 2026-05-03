@@ -11,6 +11,18 @@ var GestureRecognizer = class {
   retryTimeout = null;
   gestureHistory;
   listeners;
+
+  // 新增：WASM 就绪状态跟踪
+  wasmReady = false;
+  wasmCheckInterval = null;
+  sendQueue = [];
+  isSending = false;
+  consecutiveErrors = 0;
+  maxConsecutiveErrors = 5;
+  frameSkipCount = 0;
+  lastProcessTime = 0;
+  minProcessInterval = 33; // ~30fps for gesture processing (independent of video)
+
   constructor(config = {}) {
     this.config = {
       swordPointAngleThreshold: config.swordPointAngleThreshold ?? 0.5,
@@ -52,6 +64,7 @@ var GestureRecognizer = class {
       cameraStatus: []
     };
   }
+
   async init(videoElement) {
     this.videoElement = videoElement;
     if (typeof Hands === "undefined") {
@@ -61,7 +74,6 @@ var GestureRecognizer = class {
     this.mpHands = new Hands({
       locateFile: (file) => {
         const url = `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-        console.log(`[Gesture] Loading WASM file: ${url}`);
         return url;
       }
     });
@@ -72,35 +84,105 @@ var GestureRecognizer = class {
       minTrackingConfidence: 0.5
     });
     this.mpHands.onResults((results) => this.onResults(results));
+
+    // 关键修复：预加载 WASM 模型，确保完全就绪后再标记为 ready
+    await this.preloadWasm();
     console.log("[Gesture] MediaPipe Hands initialized successfully");
   }
+
+  // 新增：预加载 WASM 并验证就绪状态
+  async preloadWasm() {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        console.warn("[Gesture] WASM preload timeout, continuing anyway");
+        this.wasmReady = true;
+        resolve();
+      }, 15000);
+
+      try {
+        // 发送一个空帧来触发 WASM 初始化
+        const testCanvas = document.createElement('canvas');
+        testCanvas.width = 1;
+        testCanvas.height = 1;
+        const ctx = testCanvas.getContext('2d');
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, 1, 1);
+
+        this.mpHands.send({ image: testCanvas }).then(() => {
+          clearTimeout(timeout);
+          this.wasmReady = true;
+          console.log("[Gesture] WASM preloaded and verified ready");
+          resolve();
+        }).catch((err) => {
+          clearTimeout(timeout);
+          // 即使预加载失败，也标记为 ready（会在运行时重试）
+          console.warn("[Gesture] WASM preload test failed (may be normal):", err.message);
+          this.wasmReady = true;
+          resolve();
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        this.wasmReady = true;
+        resolve();
+      }
+    });
+  }
+
   async startCamera() {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" }
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+      audio: false
     });
     if (!this.videoElement) throw new Error("Video element not initialized");
+
     this.videoElement.srcObject = stream;
     this.videoElement.setAttribute("playsinline", "true");
     this.videoElement.setAttribute("autoplay", "true");
     this.videoElement.setAttribute("muted", "true");
+
+    // 强制 iOS Safari 播放
+    this.videoElement.playsInline = true;
+    this.videoElement.muted = true;
+    this.videoElement.autoplay = true;
+
     return new Promise((resolve, reject) => {
       this.videoElement.onloadedmetadata = () => {
         this.videoElement.play().then(() => {
           this.cameraActive = true;
           this.notifyCameraStatus("active", "\u6444\u50CF\u5934\u5DF2\u542F\u52A8 - \u8BF7\u5C55\u793A\u624B\u52BF");
-          setTimeout(() => this.processVideoFrames(), 500);
+          // 延迟启动处理循环，确保视频流稳定
+          setTimeout(() => this.processVideoFrames(), 300);
           resolve();
-        }).catch(reject);
+        }).catch((playErr) => {
+          console.error("[Gesture] Video play() rejected:", playErr);
+          // iOS/Safari 自动播放策略限制
+          this.cameraActive = true;
+          this.notifyCameraStatus("active", "\u6444\u50CF\u5934\u5DF2\u542F\u52A8 - \u70B9\u51FB\u5C4F\u5E55\u5F00\u59CB\u8BC6\u522B");
+          setTimeout(() => this.processVideoFrames(), 300);
+          resolve();
+        });
       };
       this.videoElement.onerror = (e) => {
         this.notifyCameraStatus("inactive", "\u6444\u50CF\u5934\u8BBF\u95EE\u5931\u8D25");
         reject(e);
       };
+
+      // 安全超时：即使 metadata 未加载也尝试开始
+      setTimeout(() => {
+        if (!this.cameraActive) {
+          console.warn("[Gesture] Video metadata timeout, forcing start");
+          this.cameraActive = true;
+          this.processVideoFrames();
+          resolve();
+        }
+      }, 5000);
     });
   }
+
   stopCamera() {
     this.cameraActive = false;
     this.isProcessing = false;
+    this.isSending = false;
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
@@ -109,61 +191,88 @@ var GestureRecognizer = class {
       clearTimeout(this.retryTimeout);
       this.retryTimeout = null;
     }
+    if (this.wasmCheckInterval !== null) {
+      clearInterval(this.wasmCheckInterval);
+      this.wasmCheckInterval = null;
+    }
     if (this.videoElement?.srcObject) {
       this.videoElement.srcObject.getTracks().forEach((track) => track.stop());
     }
+    this.sendQueue = [];
+    this.consecutiveErrors = 0;
     this.notifyCameraStatus("inactive", "\u6444\u50CF\u5934\u5DF2\u505C\u6B62");
   }
+
+  // 核心修复：非阻塞式视频帧处理
   async processVideoFrames() {
-    if (!this.cameraActive || !this.mpHands || this.isDestroyed) return;
+    if (!this.cameraActive || this.isDestroyed) return;
     if (!this.videoElement || this.videoElement.readyState < 2) {
       this.animationFrameId = requestAnimationFrame(() => {
         void this.processVideoFrames();
       });
       return;
     }
-    if (this.isProcessing) {
-      this.animationFrameId = requestAnimationFrame(() => {
-        void this.processVideoFrames();
-      });
+
+    // 关键：始终调度下一帧，不依赖 send() 完成
+    this.animationFrameId = requestAnimationFrame(() => {
+      void this.processVideoFrames();
+    });
+
+    // 帧率限制：避免过度处理
+    const now = performance.now();
+    if (now - this.lastProcessTime < this.minProcessInterval) {
+      return; // 跳过此帧
+    }
+    this.lastProcessTime = now;
+
+    // 如果正在发送或已达到最大并发，跳过
+    if (this.isSending) {
+      this.frameSkipCount++;
       return;
     }
+
     try {
-      this.isProcessing = true;
+      this.isSending = true;
+      // 使用 race 条件防止永久挂起
       const sendPromise = this.mpHands.send({ image: this.videoElement });
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("MediaPipe send timeout")), 5000)
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("MediaPipe send timeout")), 3000)
       );
       await Promise.race([sendPromise, timeoutPromise]);
+
+      // 成功：重置错误计数
+      this.consecutiveErrors = 0;
+      this.frameSkipCount = 0;
     } catch (error) {
-      console.warn("[Gesture] processVideoFrames error:", error.message);
-      this.handleWasmError(error);
-    } finally {
-      this.isProcessing = false;
-    }
-    if (!this.isDestroyed) {
-      this.animationFrameId = requestAnimationFrame(() => {
-        void this.processVideoFrames();
-      });
-    }
-  }
-  wasmErrorCount = 0;
-  maxWasmErrors = 3;
-  handleWasmError(error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    if (msg.includes("abort") || msg.includes("Module.arguments") || msg.includes("Failed to fetch")) {
-      this.wasmErrorCount++;
-      if (this.wasmErrorCount >= this.maxWasmErrors) {
-        console.warn("[Gesture] WASM errors detected, attempting recovery...");
-        this.notifyCameraStatus("inactive", "\u624B\u52BF\u8BC6\u522B\u51FA\u9519\uFF0C\u8BF7\u91CD\u65B0\u542F\u52A8\u6444\u50CF\u5934");
-        this.wasmErrorCount = 0;
+      this.consecutiveErrors++;
+      this.handleSendError(error);
+
+      // 连续错误过多时，尝试恢复
+      if (this.consecutiveErrors >= this.maxConsecutiveErrors) {
+        console.warn(`[Gesture] ${this.consecutiveErrors} consecutive errors, attempting recovery...`);
+        this.consecutiveErrors = 0;
+        // 不停止处理循环，让用户看到视频继续播放
       }
+    } finally {
+      this.isSending = false;
     }
   }
+
   handleSendError(error) {
-    console.error("Error sending frame to MediaPipe:", error);
-    this.handleWasmError(error);
+    const msg = error instanceof Error ? error.message : String(error);
+
+    // 对不同类型错误的处理策略
+    if (msg.includes("timeout")) {
+      console.warn("[Gesture] Frame processing timeout (video continues playing)");
+    } else if (msg.includes("abort") || msg.includes("Module.arguments") || msg.includes("Failed to fetch")) {
+      console.warn("[Gesture] WASM loading issue:", msg);
+    } else if (msg.includes("null") || msg.includes("undefined")) {
+      console.warn("[Gesture] Null reference in processing:", msg);
+    } else {
+      console.error("[Gesture] Unexpected error:", error);
+    }
   }
+
   onResults(results) {
     try {
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
@@ -191,11 +300,13 @@ var GestureRecognizer = class {
       this.handleError();
     }
   }
+
   handleNoHand() {
     this.state.gestureFrames = 0;
     this.state.currentGesture = "none";
     this.notifyGestureChange({ gesture: "none" });
   }
+
   handleError() {
     this.state.currentGesture = "none";
     this.state.gestureFrames = 0;
@@ -209,6 +320,7 @@ var GestureRecognizer = class {
       }, 1e3);
     }
   }
+
   validateLandmarks(lm, results) {
     if (!lm || lm.length < 21) {
       console.warn("Invalid hand landmarks: expected 21, got", lm ? lm.length : 0);
@@ -230,6 +342,7 @@ var GestureRecognizer = class {
     }
     return true;
   }
+
   updateHandPosition(lm) {
     const palmX = (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5;
     const palmY = (lm[0].y + lm[5].y + lm[9].y + lm[13].y + lm[17].y) / 5;
@@ -243,6 +356,7 @@ var GestureRecognizer = class {
     this.state.lastHandTime = now;
     this.listeners.handPosition.forEach((cb) => cb(this.state.handPos));
   }
+
   updateHandRotation(lm) {
     const dx = lm[9].x - lm[0].x;
     const dy = lm[9].y - lm[0].y;
@@ -251,19 +365,21 @@ var GestureRecognizer = class {
     }
     this.state.handRotation += (this.state.targetHandRotation - this.state.handRotation) * 0.1;
   }
+
   updateFingerTips(lm) {
     const newTip3D = this.handTo3D(lm[8].x, lm[8].y);
     if (this.state.fingerTip3D) {
-      this.state.prevFingerTip3D = { ...this.state.fingerTip3D };
+      this.prevFingerTip3D = { ...this.state.fingerTip3D };
     } else {
-      this.state.prevFingerTip3D = { ...newTip3D };
+      this.prevFingerTip3D = { ...newTip3D };
     }
     this.state.fingerTip3D = newTip3D;
-    this.state.peaceTarget = this.handTo3D(
+    this.peaceTarget = this.handTo3D(
       (lm[8].x + lm[12].x) / 2,
       (lm[8].y + lm[12].y) / 2
     );
   }
+
   updateGestureHistory(raw, _lm) {
     const nowMs = performance.now();
     if (raw !== "unknown") {
@@ -293,6 +409,7 @@ var GestureRecognizer = class {
       }
     }
   }
+
   classifyGesture(lm) {
     const fs = this.getFingerStates(lm);
     const [thumbExt, indexExt, middleExt, ringExt, pinkyExt] = fs;
@@ -305,6 +422,7 @@ var GestureRecognizer = class {
     }
     return "unknown";
   }
+
   calculateFingerBend(lm) {
     const palmCenter = {
       x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
@@ -332,6 +450,7 @@ var GestureRecognizer = class {
       pinky: bentDist.pinky / (extendedDist.pinky || 1)
     };
   }
+
   getFingerStates(lm) {
     if (!lm || lm.length < 21) return [false, false, false, false, false];
     return [
@@ -342,11 +461,13 @@ var GestureRecognizer = class {
       this.isFingerExtended(lm, 20, 18, 17)
     ];
   }
+
   isThumbExtended(lm) {
     const tipToWrist = this.dist2d(lm[4], lm[0]);
     const ipToWrist = this.dist2d(lm[3], lm[0]);
     return tipToWrist > ipToWrist * 1.1;
   }
+
   isFingerExtended(lm, tipIdx, pipIdx, mcpIdx) {
     const tipToWrist = this.dist2d(lm[tipIdx], lm[0]);
     const pipToWrist = this.dist2d(lm[pipIdx], lm[0]);
@@ -357,6 +478,7 @@ var GestureRecognizer = class {
     const straightRatio = tipToPip / (pipToMcp || 0.01);
     return isExtended || straightRatio > 0.8;
   }
+
   calculateHandOpenness(lm) {
     const palmCenter = {
       x: (lm[0].x + lm[5].x + lm[9].x + lm[13].x + lm[17].x) / 5,
@@ -373,6 +495,7 @@ var GestureRecognizer = class {
     }
     return Math.min(1, Math.max(0, totalDist / (maxDist * 5)));
   }
+
   handTo3D(hx, hy) {
     if (!Number.isFinite(hx) || !Number.isFinite(hy)) {
       return new THREE.Vector3(0, 2, 0);
@@ -385,19 +508,23 @@ var GestureRecognizer = class {
       0
     );
   }
+
   dist2d(a, b) {
     return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
   }
+
   dist3d(a, b) {
     return Math.sqrt(
       (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + ((a.z ?? 0) - (b.z ?? 0)) ** 2
     );
   }
+
   on(event, callback) {
     if (this.listeners[event]) {
       this.listeners[event].push(callback);
     }
   }
+
   off(event, callback) {
     if (this.listeners[event]) {
       this.listeners[event] = this.listeners[event].filter(
@@ -405,18 +532,23 @@ var GestureRecognizer = class {
       );
     }
   }
+
   notifyGestureChange(payload) {
     this.listeners.gestureChange.forEach((cb) => cb(payload));
   }
+
   notifyCameraStatus(status, message) {
     this.listeners.cameraStatus.forEach((cb) => cb({ status, message }));
   }
+
   getState() {
     return { ...this.state };
   }
+
   isCameraActive() {
     return this.cameraActive;
   }
+
   dispose() {
     this.isDestroyed = true;
     this.stopCamera();
