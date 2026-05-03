@@ -15,13 +15,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify package-lock.json
+        run: |
+          if [ ! -f package-lock.json ]; then
+            echo "package-lock.json not found, generating..."
+            npm install --package-lock-only
+          fi
+          ls -la package-lock.json
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
