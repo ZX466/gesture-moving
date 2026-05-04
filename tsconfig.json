@@ -14,12 +14,12 @@
     "ignoreDeprecations": "6.0",
     "types": ["vitest/globals"],
     "paths": {
-      "@modules/*": ["./js/modules/*"]
+      "@modules/*": ["./public/js/modules/*"]
     }
   },
   "include": [
-    "js/**/*.ts",
-    "js/**/*.js",
+    "public/js/**/*.ts",
+    "public/js/**/*.js",
     "tests/**/*.ts",
     "tests/**/*.js",
     "vitest.config.ts"

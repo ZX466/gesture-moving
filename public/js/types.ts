@@ -290,7 +290,7 @@ export interface UIElements {
   sensitivityValue: HTMLElement | null;
   startBtn: HTMLButtonElement | null;
   stopBtn: HTMLButtonElement | null;
-  swordToggle: HTMLInputElement | null;
+  swordToggle: HTMLButtonElement | null;
   swordToggleLabel: HTMLElement | null;
   resetBtn: HTMLButtonElement | null;
   screenshotBtn: HTMLButtonElement | null;

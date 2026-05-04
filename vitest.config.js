@@ -8,12 +8,12 @@ export default defineConfig({
     setupFiles: ['./tests/setup.js'],
     include: ['tests/**/*.test.js'],
     alias: {
-      '@modules': resolve(__dirname, 'js/modules'),
+      '@modules': resolve(__dirname, 'public/js/modules'),
     },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      include: ['js/modules/**/*.js'],
+      include: ['public/js/modules/**/*.js'],
       exclude: ['**/*.test.js'],
       thresholds: {
         lines: 80,

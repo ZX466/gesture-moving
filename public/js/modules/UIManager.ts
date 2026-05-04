@@ -90,7 +90,7 @@ export class UIManager {
     this.elements.sensitivityValue = document.getElementById('gesture-sensitivity-value') ?? null;
     this.elements.startBtn = document.getElementById('start-camera') as HTMLButtonElement | null;
     this.elements.stopBtn = document.getElementById('stop-camera') as HTMLButtonElement | null;
-    this.elements.swordToggle = document.getElementById('sword-toggle') as HTMLInputElement | null;
+    this.elements.swordToggle = document.getElementById('sword-toggle') as HTMLButtonElement | null;
     this.elements.swordToggleLabel = document.getElementById('sword-toggle-label') ?? null;
     this.elements.resetBtn = document.getElementById('reset-btn') as HTMLButtonElement | null;
     this.elements.screenshotBtn = document.getElementById('screenshot-btn') as HTMLButtonElement | null;
@@ -202,12 +202,13 @@ export class UIManager {
     const toggle = this.elements.swordToggle;
     if (!toggle) return;
 
-    toggle.addEventListener('change', () => {
-      this.swordEnabled = toggle.checked;
+    toggle.addEventListener('click', () => {
+      this.swordEnabled = !this.swordEnabled;
+      toggle.classList.toggle('active', this.swordEnabled);
       if (this.elements.swordToggleLabel) {
         this.elements.swordToggleLabel.textContent = this.swordEnabled
-          ? '飞剑 ON'
-          : '飞剑 OFF';
+          ? '飞剑已开启'
+          : '飞剑已关闭';
       }
       this.config.onSwordToggle(this.swordEnabled);
     });
