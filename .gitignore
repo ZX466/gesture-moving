@@ -34,3 +34,9 @@ build/
 *.temp
 .vercel
 .env*.local
+
+# Claude Code internal configuration
+.claude/
+
+# Coverage reports
+coverage/

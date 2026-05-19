@@ -8,6 +8,7 @@
     "dev": "npx http-server -p 8080 -o",
     "start": "npx http-server -p 8080",
     "serve": "python -m http.server 8080",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
@@ -20,11 +21,11 @@
     "interactive-art",
     "webgl"
   ],
-  "author": "",
+  "author": "ZX466",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/ZX466/gesture-moving.git"
   },
   "devDependencies": {
     "@types/three": "^0.184.0",
